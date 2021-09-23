@@ -14,6 +14,7 @@ const path = require('path')
 const EXTENSION_NAME = 'sparql-executor'
 const DEFAULT_SPARQL_PATH = '/sparql'
 const SPARQL_RESULTS_MIME_TYPE = 'application/sparql-results+json'
+const TURTLE_RESULTS_MIME_TYPE = 'text/turtle'
 
 const AUTH_TYPE = {
   BASIC: 'basic',
@@ -22,6 +23,7 @@ const AUTH_TYPE = {
 const OUTPUT = {
   JSON: 'json',
   TABLE: 'table',
+  TURTLE: 'turtle'
 }
 
 const COMMAND = {
@@ -117,31 +119,48 @@ const renderAsJson = (results) => {
   outputChannel.show(true)
 }
 
-const getRequestPostOptions = (url, queryParameterName) => {
+const renderAsTurtle = (results) => {
+  const outputChannel = vscode.window.createOutputChannel(`SPARQL Results`)
+  outputChannel.append(results)
+  outputChannel.show(true)
+}
+
+const addAcceptHeader = (requestOptions, output) => {
+  console.log(output)
+  if (output === OUTPUT.TURTLE) {
+    _.set(requestOptions, 'headers.accept', TURTLE_RESULTS_MIME_TYPE)
+  } else {
+    _.set(requestOptions, 'headers.accept', SPARQL_RESULTS_MIME_TYPE) 
+  }
+  return requestOptions
+}
+
+const getRequestPostOptions = (url, queryParameterName, output) => {
   const query = vscode.window.activeTextEditor.document.getText()
 
-  return {
+  let requestOptions = {
     method: 'POST',
     url,
     headers: {
-      Accept: SPARQL_RESULTS_MIME_TYPE,
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     form: { [queryParameterName]: query },
   }
+
+  return addAcceptHeader(requestOptions, output)
 }
 
-const getRequestGetOptions = (url, queryParameterName) => {
+const getRequestGetOptions = (url, queryParameterName, output) => {
   const query = encodeURIComponent(vscode.window.activeTextEditor.document.getText())
   const fullRequestUrl = _.includes(url, '?') ? `${url}&${queryParameterName}=${query}` : `${url}?${queryParameterName}=${query}`
 
-  return {
+  let requestOptions = {
     method: 'GET',
     url: fullRequestUrl,
-    headers: {
-      Accept: SPARQL_RESULTS_MIME_TYPE,
-    },
+    headers: {},
   }
+
+  return addAcceptHeader(requestOptions, output)
 }
 
 /**
@@ -177,8 +196,8 @@ const executeSparqlQuery = async (context) => {
   const url = `${protocol}://${host}/${(path || DEFAULT_SPARQL_PATH).replace(/^\//, '')}`
   const options =
     method === 'GET'
-      ? getRequestGetOptions(url, queryParameterName || queryType)
-      : getRequestPostOptions(url, queryParameterName || queryType)
+      ? getRequestGetOptions(url, queryParameterName || queryType, output)
+      : getRequestPostOptions(url, queryParameterName || queryType, output)
 
   // Add custom headers.
   if (_.isArray(customHeaders)) {
@@ -194,10 +213,10 @@ const executeSparqlQuery = async (context) => {
 
   vscode.window.setStatusBarMessage('Executing SPARQL query...')
 
-  let responseJson
+  let response
 
   try {
-    responseJson = await request(options)
+    response = await request(options)
   } catch (error) {
     vscode.window.showErrorMessage(`Something went wrong when executing the SPARQL query: '${error}'`)
     return
@@ -205,29 +224,40 @@ const executeSparqlQuery = async (context) => {
     vscode.window.setStatusBarMessage(undefined)
   }
 
-  const response = JSON.parse(responseJson)
-  const values = []
+  
+  if ((output === OUTPUT.TABLE)|| (output === OUTPUT.JSON)) {
+    const responseJson = JSON.parse(response)
 
-  if (!response || !response.results || !response.results.bindings || !response.results.bindings.length) {
-    vscode.window.showInformationMessage('No results')
-    return
-  }
+    const values = []
 
-  _.each(response.results.bindings, (binding) => {
-    const newBinding = {}
+    _.each(responseJson.results.bindings, (binding) => {
+      const newBinding = {}
 
-    _.each(binding, (value, key) => {
-      newBinding[key] = value.value
+      _.each(binding, (value, key) => {
+        newBinding[key] = value.value
+      })
+
+      values.push(newBinding)
     })
 
-    values.push(newBinding)
-  })
+    if (!response || !response.results || !response.results.bindings || !response.results.bindings.length) {
+      vscode.window.showInformationMessage('No results')
+      return
+    }
 
-  if (output === OUTPUT.TABLE) {
-    renderAsTable(values, context)
+    if (output === OUTPUT.TABLE) {
+      renderAsTable(values, context)
+    } else {
+      renderAsJson(values)
+    }
   } else {
-    renderAsJson(values)
+    if (!response) {
+      vscode.window.showInformationMessage('No results')
+      return
+    }
+    renderAsTurtle(response)
   }
+
 }
 
 /**
